@@ -60,9 +60,11 @@ Design
   source shares one pipeline name and another connector run in between would
   overwrite this one's state, and deletions would never be detected.
 * **Robust to a bad file** — a note that cannot be read (permissions, vanished
-  between walk and read), is empty, or is not text (NUL bytes) is skipped for
-  the run with a log line: its last known version stays, nothing is tombstoned,
-  the cursor does not advance, and it is retried next run.
+  between walk and read) or is not text (NUL bytes) is skipped for the run with
+  a log line: its last known version stays, nothing is tombstoned, the cursor
+  does not advance, and it is retried next run. A never-seen empty note is not
+  ingested yet; a known note emptied by its author is an edit and is re-emitted
+  with its title only.
 """
 
 from __future__ import annotations
@@ -509,21 +511,24 @@ def scan_vault(
     return scan
 
 
-def _read_note(root: Path, path: str) -> bytes | None:
+def _read_note(root: Path, path: str, *, known: bool) -> bytes | None:
     """Bytes of a note, or ``None`` when it must be skipped this run.
 
     ``None`` for an unreadable file (permissions, vanished between walk and
-    read), an empty file, or one containing NUL bytes (not text). The caller
-    keeps the last known entry untouched, so nothing is tombstoned and the
-    cursor does not advance; the note is simply retried next run.
+    read) or one containing NUL bytes (not text): the caller keeps the last
+    known entry untouched, so nothing is tombstoned and the cursor does not
+    advance, and the note is retried next run. An empty file is ``None`` only
+    for a note never seen before (an "Untitled.md" nobody wrote yet); for a
+    *known* note, zero bytes is an edit and the empty body is returned so the
+    note is re-emitted with its title only.
     """
     try:
         raw = (root / path).read_bytes()
     except OSError as exc:
         logger.warning("Obsidian: cannot read %s (%s); keeping its last known version.", path, exc)
         return None
-    if not raw:
-        logger.debug("Obsidian: %s is empty; skipped this run.", path)
+    if not raw and not known:
+        logger.debug("Obsidian: %s is empty and not known yet; skipped this run.", path)
         return None
     if b"\x00" in raw:
         logger.warning("Obsidian: %s contains NUL bytes (not text); skipped this run.", path)
@@ -578,7 +583,7 @@ def sync_vault(root: Path, state: dict[str, Any], **scan_options: Any) -> Iterat
         if old and (old.get("mtime"), old.get("size")) == (mtime, size):
             entries[path] = dict(old)
             continue
-        raw = _read_note(root, path)
+        raw = _read_note(root, path, known=old is not None)
         if raw is None:
             if old:
                 entries[path] = dict(old)  # keep the last known version; retry next run
@@ -620,7 +625,7 @@ def sync_vault(root: Path, state: dict[str, Any], **scan_options: Any) -> Iterat
         if path in parsed:
             continue
         if changed_keys and set(entry.get("targets") or ()) & changed_keys:
-            raw = _read_note(root, path)
+            raw = _read_note(root, path, known=True)
             if raw is not None:
                 parsed[path] = parse_note(path, raw, entry["mtime"])
 

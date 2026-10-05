@@ -449,18 +449,32 @@ def test_unreadable_note_is_skipped_not_fatal(tmp_path, monkeypatch):
     assert list(rows) == ["Vet.md"] and rows["Vet.md"]["content"].endswith("Links to: Cat")
 
 
-def test_empty_and_binary_notes_are_skipped_without_forgetting_anything(tmp_path):
+def test_new_empty_and_binary_notes_are_skipped_without_forgetting_anything(tmp_path):
     root = write_vault(tmp_path, {**VAULT, "Empty.md": "", "Binary.md": b"\x00\x01PK"})
     state: dict = {}
     rows, deleted = run_sync(root, state)
     assert sorted(rows) == ["Dog.md", "Vet.md", "pets/Cat.md"] and deleted == []
     assert "Empty.md" not in state["notes"] and "Binary.md" not in state["notes"]
-    # A known note emptied by the editor keeps its last version instead of vanishing.
-    (root / "Vet.md").write_text("", encoding="utf-8")
+    # A known note that turns binary keeps its last version instead of vanishing.
+    (root / "Vet.md").write_bytes(b"\x00garbage")
     bump_mtime(root / "Vet.md", 10)
     before = dict(state["notes"]["Vet.md"])
     assert run_sync(root, state) == ({}, [])
     assert state["notes"]["Vet.md"] == before
+
+
+def test_known_note_emptied_on_purpose_is_re_emitted_as_an_edit(tmp_path):
+    root = write_vault(tmp_path, VAULT)  # Vet links to Dog and Cat
+    state: dict = {}
+    run_sync(root, state)
+    (root / "Vet.md").write_text("", encoding="utf-8")
+    bump_mtime(root / "Vet.md", 10)
+    rows, deleted = run_sync(root, state)
+    assert list(rows) == ["Vet.md"] and deleted == []  # an edit, not a skip or a tombstone
+    assert rows["Vet.md"]["content"] == "" and rows["Vet.md"]["title"] == "Vet"
+    assert rows["Vet.md"]["link_count"] == 0 and rows["Vet.md"]["size_bytes"] == 0
+    assert state["notes"]["Vet.md"]["size"] == 0
+    assert run_sync(root, state) == ({}, [])  # and the next run is a no-op again
 
 
 def test_body_only_edit_does_not_reread_linking_notes(tmp_path, monkeypatch):
