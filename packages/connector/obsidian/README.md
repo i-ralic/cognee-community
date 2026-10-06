@@ -129,6 +129,6 @@ so `remember` resumes where it left off across processes and containers.
 ```bash
 cd packages/connector/obsidian
 uv sync --all-extras
-uv run pytest -q           # 40 tests, tmp_path vaults, no network, no LLM, no model
+uv run pytest -q           # tmp_path vaults, no network, no LLM, no model
 uv run ruff check . && uv run ruff format --check .
 ```
